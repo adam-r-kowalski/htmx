@@ -40,7 +40,7 @@ Add `hx-optimistic` to any element that makes a request, pointing to a template 
 </form>
 ```
 
-When the form submits, the template content is immediately inserted into the target. When the server responds, the optimistic content is removed and the real response is swapped in.
+When the form submits, the template content is immediately inserted into the target. When the server responds, the real response replaces the optimistic content.
 
 ## Request Parameters as Data Attributes
 
@@ -107,7 +107,26 @@ You can also style based on the request parameters:
 
 1. On `htmx:config:request` — captures the raw `FormData` before htmx transforms it
 2. On `htmx:before:request` — clones the template, sets `data-*` for each param, inserts it into the target (respecting swap style), and calls `htmx.process()` so hx-live bindings activate
-3. On `htmx:before:swap` or `htmx:error` — removes the optimistic content and unhides any hidden elements
+3. On a successful `innerHTML` swap — leaves the optimistic content in place until the authoritative response replaces the target's children
+4. On other successful swap styles — removes the optimistic content immediately before the swap
+5. On `htmx:error` — removes the optimistic content and restores the original content
+
+## View Transitions
+
+When the request opts into view transitions, the extension participates in both visual state changes:
+
+```html
+<form
+    hx-post="/message"
+    hx-target="#messages"
+    hx-swap="innerHTML transition:true"
+    hx-optimistic="#msg-opt"
+>
+    ...
+</form>
+```
+
+The first transition changes the original content into the optimistic content. The response swap then transitions directly from the optimistic content into the authoritative server response. The original content is not restored between those transitions. If the request fails, the extension transitions from the optimistic content back to the original content.
 
 ## Swap Style Behavior
 

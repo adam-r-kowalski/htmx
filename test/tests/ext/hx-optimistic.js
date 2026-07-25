@@ -42,6 +42,52 @@ describe('hx-optimistic attribute', function() {
         assert.equal(find('#result').textContent.trim(), 'Final');
     })
 
+    it('transitions directly from optimistic content to the innerHTML response', async function () {
+        let originalStartViewTransition = document.startViewTransition
+        let snapshots = []
+        document.startViewTransition = update => {
+            snapshots.push({
+                hasOptimisticContent: document.querySelector('.hx-optimistic') !== null,
+                originalDisplay: document.querySelector('#original')?.style.display ?? null
+            })
+            let updateCallbackDone = Promise.resolve().then(update)
+            return {
+                ready: updateCallbackDone,
+                updateCallbackDone,
+                finished: updateCallbackDone,
+                skipTransition: () => {}
+            }
+        }
+
+        try {
+            let responses = mockSequentialResponses('POST', '/submit', 'Final')
+            createProcessedHTML('<div id="result"><span id="original">Original</span></div><template id="opt"><span>Optimistic</span></template><button hx-post="/submit" hx-target="#result" hx-swap="innerHTML transition:true" hx-optimistic="#opt">Go</button>');
+
+            let requestFinished = forRequest(2000)
+            find('button').click()
+            await htmx.timeout(0)
+
+            assert.isNotNull(document.querySelector('.hx-optimistic'))
+            assert.equal(find('#original').style.display, 'none')
+
+            await responses.next()
+            await requestFinished
+
+            assert.lengthOf(snapshots, 2)
+            assert.deepEqual(snapshots[0], {
+                hasOptimisticContent: false,
+                originalDisplay: ''
+            })
+            assert.deepEqual(snapshots[1], {
+                hasOptimisticContent: true,
+                originalDisplay: 'none'
+            })
+            assert.equal(find('#result').textContent.trim(), 'Final')
+        } finally {
+            document.startViewTransition = originalStartViewTransition
+        }
+    })
+
     it('resolves extended target selectors from the source element', async function () {
         mockResponse('POST', '/submit', 'Final')
         const result = createProcessedHTML('<div class="result"><span>Original</span><button hx-post="/submit" hx-target="closest .result" hx-swap="innerHTML" hx-optimistic="#opt">Go</button></div><div id="opt" style="display:none">Optimistic</div>');
@@ -127,6 +173,43 @@ describe('hx-optimistic attribute', function() {
         find('button').click()
         await waitForEvent('htmx:error', 2000);
         assert.isNull(document.querySelector('.hx-optimistic'));
+    })
+
+    it('transitions from optimistic content back to the original content on error', async function () {
+        let originalStartViewTransition = document.startViewTransition
+        let snapshots = []
+        document.startViewTransition = update => {
+            snapshots.push({
+                hasOptimisticContent: document.querySelector('.hx-optimistic') !== null,
+                originalDisplay: document.querySelector('#original')?.style.display ?? null
+            })
+            let updateCallbackDone = Promise.resolve().then(update)
+            return {
+                ready: updateCallbackDone,
+                updateCallbackDone,
+                finished: updateCallbackDone,
+                skipTransition: () => {}
+            }
+        }
+
+        try {
+            fetchMock.mockResponse('POST', '/submit', () => Promise.reject(new Error('Network error')));
+            createProcessedHTML('<div id="result"><span id="original">Original</span></div><template id="opt"><span>Optimistic</span></template><button hx-post="/submit" hx-target="#result" hx-swap="innerHTML transition:true" hx-optimistic="#opt">Go</button>');
+
+            find('button').click()
+            await waitForEvent('htmx:error', 2000)
+            await htmx.timeout(0)
+
+            assert.lengthOf(snapshots, 2)
+            assert.deepEqual(snapshots[1], {
+                hasOptimisticContent: true,
+                originalDisplay: 'none'
+            })
+            assert.isNull(document.querySelector('.hx-optimistic'))
+            assert.equal(find('#original').style.display, '')
+        } finally {
+            document.startViewTransition = originalStartViewTransition
+        }
     })
 
     it('unhides hidden elements after swap', async function () {
