@@ -219,7 +219,9 @@ target supersedes its older visual animation. Every accepted DOM update still
 runs without waiting for visual animation completion. Browsers without
 `Element.startViewTransition()`, disconnected targets, and hidden documents
 apply the same DOM update immediately without animation, so visual capture
-never gates authoritative state.
+never gates authoritative state. If a browser returns a scoped transition but
+does not begin capture within 50 ms, htmx skips that visual transition and
+executes the update exactly once.
 
 Set `transition:false` to opt out explicitly.
 

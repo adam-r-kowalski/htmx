@@ -177,6 +177,9 @@ init: (internalAPI) => { api = internalAPI; },
 for `finished` before accepting a newer update. The helper performs the update
 immediately when the scoped API is unavailable, the root is disconnected, the
 document is hidden, the transition is canceled, or capture cannot start.
+Target-scoped capture also has a 50 ms watchdog: if the browser returns a
+transition but never invokes its update callback, htmx skips only the visual
+transition and executes the update exactly once.
 
 ## Request Context (`detail.ctx`)
 

@@ -2378,10 +2378,28 @@ var htmx = (() => {
 
             // Avoid unhandled ready rejections when a newer scoped transition supersedes this one.
             transition.ready?.catch?.(() => {});
-            let done = Promise.resolve(transition.updateCallbackDone).catch(error => {
+            let nativeDone = Promise.resolve(transition.updateCallbackDone).catch(error => {
                 if (!invoked) return runUpdateOnce();
                 throw error;
             });
+            let captureTimeout;
+            let captureFallback = new Promise((resolve, reject) => {
+                if (mode !== 'target') return;
+                captureTimeout = setTimeout(() => {
+                    if (invoked) return;
+                    detail.skipped = true;
+                    detail.reason = 'capture-timeout';
+                    transition.skipTransition?.();
+                    Promise.resolve(runUpdateOnce()).then(resolve, reject);
+                }, 50);
+            });
+            let done = mode === 'target'
+                ? Promise.race([nativeDone, captureFallback])
+                : nativeDone;
+            done.then(
+                () => clearTimeout(captureTimeout),
+                () => clearTimeout(captureTimeout)
+            );
             let finished = Promise.resolve(transition.finished)
                 .catch(() => {
                     detail.skipped = true;

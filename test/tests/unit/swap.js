@@ -467,6 +467,26 @@ describe('swap() unit tests', function() {
         }
     })
 
+    it('falls back exactly once when scoped capture never invokes the update callback', async function () {
+        let target = createProcessedHTML("<div id='scope'>Old</div>");
+        let skips = 0;
+        let rejectFinished;
+        target.startViewTransition = () => ({
+            ready: new Promise(() => {}),
+            updateCallbackDone: new Promise(() => {}),
+            finished: new Promise((resolve, reject) => { rejectFinished = reject; }),
+            skipTransition: () => {
+                skips++;
+                rejectFinished(new Error('capture timed out'));
+            }
+        });
+
+        await htmx.swap({target, text: 'New', swap: 'innerHTML transition:target'});
+
+        assert.equal(skips, 1);
+        assert.equal(target.textContent, 'New');
+    })
+
     it('runs a skipped scoped transition update exactly once', async function () {
         let target = createProcessedHTML("<div id='scope'>Old</div>");
         let updates = 0;
