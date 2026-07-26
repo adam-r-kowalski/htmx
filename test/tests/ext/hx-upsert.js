@@ -370,6 +370,63 @@ describe('hx-upsert extension', function() {
         )
     })
 
+    it('preserves the native scroll anchor for every ordered delivery shape', async function () {
+        let canonicalRows = (versions) => versions.map(version =>
+            `<li id="row-${version}" data-stream-version="${version}" data-update-version="${version}" style="height: 320px">Row ${version}</li>`
+        ).join('')
+        for (let fixture of [
+            {
+                name: 'new middle insertion',
+                existing: canonicalRows([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12]),
+                response: '<li id="row-11" data-stream-version="11" data-update-version="11" style="height: 320px">Row 11</li>'
+            },
+            {
+                name: 'pending-to-authoritative replacement',
+                existing: canonicalRows([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12]) +
+                    '<li id="pending-11" data-pending="true" style="height: 320px">Pending 11</li>',
+                response: '<li id="pending-11" data-stream-version="11" data-update-version="11" style="height: 320px">Row 11</li>'
+            },
+            {
+                name: 'duplicate delivery',
+                existing: canonicalRows([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]),
+                response: '<li id="row-12" data-stream-version="12" data-update-version="12" style="height: 320px">Duplicate 12</li>'
+            },
+            {
+                name: 'stale delivery',
+                existing: canonicalRows([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]),
+                response: '<li id="row-12" data-stream-version="12" data-update-version="11" style="height: 320px">Stale 12</li>'
+            }
+        ]) {
+            mockResponse('GET', '/test', fixture.response)
+            let list = createProcessedHTML(`<ol hx-get="/test" hx-swap="upsert key:data-stream-version version:data-update-version">${fixture.existing}</ol>`)
+            let sentinel = list.querySelector('#row-9')
+            sentinel.scrollIntoView({block: 'start'})
+            await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+            let before = {
+                scrollY: window.scrollY,
+                sentinelTop: sentinel.getBoundingClientRect().top
+            }
+            let minimumScrollY = before.scrollY
+            let observer = new MutationObserver(() => {
+                minimumScrollY = Math.min(minimumScrollY, window.scrollY)
+            })
+            observer.observe(list, {childList: true})
+            list.click()
+            await htmx.timeout(20)
+            await new Promise(resolve => requestAnimationFrame(resolve))
+            observer.disconnect()
+            assert.isAbove(before.scrollY, 0, `${fixture.name} must begin below the top`)
+            assert.isAbove(minimumScrollY, 0, `${fixture.name} reached scrollY=0`)
+            assert.closeTo(
+                sentinel.getBoundingClientRect().top,
+                before.sentinelTop,
+                1,
+                `${fixture.name} moved the visible sentinel`
+            )
+            list.remove()
+        }
+    })
+
     it('performs zero mutations for duplicate and stale versions in either delivery order', async function () {
         for (let response of [
             '<li id="task" data-stream-version="2" data-update-version="8">Duplicate</li><li id="task" data-stream-version="2" data-update-version="7">Stale</li>',
@@ -502,6 +559,24 @@ describe('hx-upsert extension', function() {
         ])
         assert.deepEqual(Array.from(list.children, node => node.id), ['one', 'two', 'three', 'pending-1', 'pending-2'])
         assert.deepEqual(Array.from(new Set(mutatedIds)), ['three'])
+    })
+
+    it('repairs descending order minimally and preserves pending order', async function () {
+        mockResponse('GET', '/test', '')
+        let list = createProcessedHTML('<ol hx-get="/test" hx-swap="upsert key:data-stream-version sort:desc"><li id="one" data-stream-version="1">One</li><li id="three" data-stream-version="3">Three</li><li id="two" data-stream-version="2">Two</li><li id="pending-1">Pending 1</li><li id="pending-2">Pending 2</li></ol>')
+        let records = []
+        let observer = new MutationObserver(mutations => records.push(...mutations))
+        observer.observe(list, {childList: true})
+        list.click()
+        await htmx.timeout(20)
+        records.push(...observer.takeRecords())
+        observer.disconnect()
+        let mutatedIds = records.flatMap(record => [
+            ...Array.from(record.addedNodes, node => node.id).filter(Boolean),
+            ...Array.from(record.removedNodes, node => node.id).filter(Boolean)
+        ])
+        assert.deepEqual(Array.from(list.children, node => node.id), ['three', 'two', 'one', 'pending-1', 'pending-2'])
+        assert.deepEqual(Array.from(new Set(mutatedIds)), ['one'])
     })
 
 })
