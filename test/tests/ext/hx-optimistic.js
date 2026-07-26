@@ -135,6 +135,36 @@ describe('hx-optimistic attribute', function() {
         assert.include(find('#result').textContent, 'New');
     })
 
+    it('a separate optimistic swap inserts semantic template roots without a wrapper', async function () {
+        let responses = mockSequentialResponses('POST', '/submit', '<li id="message-1" data-stream-version="2">Committed</li>')
+        createProcessedHTML('<ol id="result"><li id="message-0" data-stream-version="1">Existing</li></ol><template id="opt"><li id="message-1" data-pending="true">Pending</li></template><button hx-post="/submit" hx-target="#result" hx-swap="innerHTML" hx-optimistic="#opt" hx-optimistic-swap="beforeend">Go</button>');
+
+        let requestFinished = forRequest(2000)
+        find('button').click()
+        await htmx.timeout(0)
+
+        assert.deepEqual(Array.from(find('#result').children, child => child.tagName), ['LI', 'LI'])
+        assert.equal(find('#message-1').textContent, 'Pending')
+        assert.isUndefined(find('#result > .hx-optimistic'))
+
+        await responses.next()
+        await requestFinished
+        assert.equal(find('#message-1').textContent, 'Committed')
+    })
+
+    it('removes the exact semantic optimistic roots on request failure', async function () {
+        fetchMock.mockResponse('POST', '/submit', () => Promise.reject(new Error('Network error')));
+        createProcessedHTML('<ol id="result"><li id="existing">Existing</li></ol><template id="opt"><li id="pending-1">One</li><li id="pending-2">Two</li></template><form hx-post="/submit" hx-target="#result" hx-swap="upsert" hx-optimistic="#opt" hx-optimistic-swap="beforeend"><input name="prompt" value="retry me"><button type="submit">Go</button></form>');
+
+        let error = waitForEvent('htmx:error', 2000);
+        find('button').click()
+        await error
+        await htmx.timeout(0)
+
+        assert.deepEqual(Array.from(find('#result').children, child => child.id), ['existing'])
+        assert.equal(find('input[name="prompt"]').value, 'retry me')
+    })
+
     it('afterend swap inserts optimistic div after target', async function () {
         mockResponse('POST', '/submit', '<span>New</span>')
         createProcessedHTML('<div id="result">Original</div><div id="opt" style="display:none">Optimistic</div><button hx-post="/submit" hx-target="#result" hx-swap="afterend" hx-optimistic="#opt">Go</button>');

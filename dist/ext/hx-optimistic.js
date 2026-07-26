@@ -12,6 +12,11 @@
         return normalizeSwapStyle(style);
     }
 
+    function optimisticSwapStyle(ctx) {
+        let style = api.attributeValue(ctx.sourceElement, "hx-optimistic-swap");
+        return style ? normalizeSwapStyle(style.trim()) : swapStyle(ctx);
+    }
+
     function usesViewTransition(ctx) {
         return ctx.transition === true || /\btransition\s*:\s*true\b/.test(ctx.swap || '');
     }
@@ -41,12 +46,20 @@
         }
         if (!target) return;
 
-        // Create optimistic div with reset styling
-        let optimisticDiv = document.createElement('div');
-        optimisticDiv.style.cssText = 'all: initial';
-        optimisticDiv.classList.add('hx-optimistic');
         let sourceNodes = sourceElt instanceof HTMLTemplateElement ? sourceElt.content.childNodes : sourceElt.childNodes;
-        for (let child of sourceNodes) optimisticDiv.appendChild(child.cloneNode(true));
+        let direct = api.attributeValue(ctx.sourceElement, "hx-optimistic-swap") != null;
+        let optimisticNodes;
+        if (direct) {
+            optimisticNodes = Array.from(sourceNodes, child => child.cloneNode(true));
+        } else {
+            // Preserve the original full-target optimistic lifecycle.
+            let optimisticDiv = document.createElement('div');
+            optimisticDiv.style.cssText = 'all: initial';
+            optimisticDiv.classList.add('hx-optimistic');
+            for (let child of sourceNodes) optimisticDiv.appendChild(child.cloneNode(true));
+            optimisticNodes = [optimisticDiv];
+            ctx.optimisticDiv = optimisticDiv;
+        }
 
         // Set data-* for each request param
         if (ctx.optimisticBody) {
@@ -55,19 +68,23 @@
                 let values = ctx.optimisticBody.getAll(k).filter(v => typeof v === 'string');
                 if (!values.length) continue;
                 let val = values.length === 1 ? values[0] : JSON.stringify(values);
-                try {
-                    optimisticDiv.dataset[k] = val;
-                } catch (e) {
+                for (let optimisticNode of optimisticNodes) {
+                    if (!(optimisticNode instanceof HTMLElement)) continue;
                     try {
-                        optimisticDiv.setAttribute('data-' + k, val);
-                    } catch (e2) { /* truly invalid name, skip */ }
+                        optimisticNode.dataset[k] = val;
+                    } catch (e) {
+                        try {
+                            optimisticNode.setAttribute('data-' + k, val);
+                        } catch (e2) { /* truly invalid name, skip */ }
+                    }
                 }
             }
         }
 
-        let style = swapStyle(ctx);
+        let style = optimisticSwapStyle(ctx);
         ctx.optHidden = [];
-        ctx.optimisticDiv = optimisticDiv;
+        ctx.optimisticNodes = optimisticNodes;
+        ctx.optimisticDirect = direct;
         ctx.optimisticTarget = target;
 
         let insert = () => {
@@ -77,25 +94,32 @@
                     child.style.display = 'none';
                     ctx.optHidden.push(child);
                 }
-                target.appendChild(optimisticDiv);
-            } else if (['beforebegin', 'afterbegin', 'beforeend', 'afterend'].includes(style)) {
-                target.insertAdjacentElement(style, optimisticDiv);
+                target.append(...optimisticNodes);
+            } else if (style === 'beforebegin') {
+                target.before(...optimisticNodes);
+            } else if (style === 'afterbegin') {
+                target.prepend(...optimisticNodes);
+            } else if (style === 'beforeend') {
+                target.append(...optimisticNodes);
+            } else if (style === 'afterend') {
+                target.after(...optimisticNodes);
             } else {
                 // Assume outerHTML-like behavior, Hide target and insert div after it
                 target.style.display = 'none';
                 ctx.optHidden.push(target);
-                target.after(optimisticDiv);
+                target.after(...optimisticNodes);
             }
-            htmx.process(optimisticDiv);
+            for (let optimisticNode of optimisticNodes) {
+                if (optimisticNode instanceof HTMLElement) htmx.process(optimisticNode);
+            }
         };
         ctx.optimisticTransition = updateWithViewTransition(ctx, insert);
     }
 
     function removeOptimisticContent(ctx) {
-        if (!ctx.optimisticDiv) return;
+        if (!ctx.optimisticNodes) return;
 
-        // Remove optimistic div
-        ctx.optimisticDiv.remove();
+        for (let optimisticNode of ctx.optimisticNodes) optimisticNode.remove();
 
         // Unhide any hidden elements
         for (let elt of ctx.optHidden) {
@@ -113,6 +137,7 @@
     }
 
     function optimisticContentWillBeReplaced(ctx, tasks) {
+        if (ctx.optimisticDirect) return true;
         return tasks?.some(task =>
             task.type === 'main' &&
             task.target === ctx.optimisticTarget &&

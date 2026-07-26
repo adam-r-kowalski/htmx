@@ -241,5 +241,53 @@ describe('hx-upsert extension', function() {
         assert.equal(list.children[1].id, 'item-1')
     })
 
+    it('orders canonical rows by stream version instead of DOM ID and leaves pending rows last', async function () {
+        mockResponse('GET', '/test', '<li id="smith-message-2" data-stream-version="3" data-update-version="3">Human 2</li><li id="smith-task-2" data-stream-version="4" data-update-version="4">Task 2</li>')
+        let list = createProcessedHTML('<ol hx-get="/test" hx-swap="upsert key:data-stream-version version:data-update-version"><li id="smith-message-1" data-stream-version="1" data-update-version="1">Human 1</li><li id="pending" data-pending="true">Pending</li><li id="smith-task-1" data-stream-version="2" data-update-version="2">Task 1</li></ol>')
+        list.click()
+        await htmx.timeout(20)
+        assert.deepEqual(Array.from(list.children, child => child.id), [
+            'smith-message-1',
+            'smith-task-1',
+            'smith-message-2',
+            'smith-task-2',
+            'pending'
+        ])
+    })
+
+    it('repositions an existing row when its canonical position arrives', async function () {
+        mockResponse('GET', '/test', '<li id="human-2" data-stream-version="3" data-update-version="3">Committed</li>')
+        let list = createProcessedHTML('<ol hx-get="/test" hx-swap="upsert key:data-stream-version version:data-update-version"><li id="human-1" data-stream-version="1" data-update-version="1">Human 1</li><li id="task-1" data-stream-version="2" data-update-version="2">Task 1</li><li id="task-2" data-stream-version="4" data-update-version="4">Task 2</li><li id="human-2" data-pending="true">Pending</li></ol>')
+        list.click()
+        await htmx.timeout(20)
+        assert.deepEqual(Array.from(list.children, child => child.id), [
+            'human-1',
+            'task-1',
+            'human-2',
+            'task-2'
+        ])
+        assert.equal(find('#human-2').textContent, 'Committed')
+    })
+
+    it('ignores duplicate and stale versions but accepts a newer version', async function () {
+        mockResponse('GET', '/test', '<li id="task" data-stream-version="2" data-update-version="8">Duplicate</li><li id="task" data-stream-version="2" data-update-version="7">Stale</li><li id="task" data-stream-version="2" data-update-version="9">Newer</li>')
+        let list = createProcessedHTML('<ol hx-get="/test" hx-swap="upsert key:data-stream-version version:data-update-version"><li id="task" data-stream-version="2" data-update-version="8">Current</li></ol>')
+        list.click()
+        await htmx.timeout(20)
+        assert.equal(find('#task').textContent, 'Newer')
+        assert.equal(list.children.length, 1)
+    })
+
+    it('compares u64 decimal versions without Number precision loss', async function () {
+        mockResponse('GET', '/test', '<li id="middle" data-stream-version="18446744073709551614" data-update-version="18446744073709551614">Middle</li>')
+        let list = createProcessedHTML('<ol hx-get="/test" hx-swap="upsert key:data-stream-version version:data-update-version"><li id="last" data-stream-version="18446744073709551615" data-update-version="18446744073709551615">Last</li><li id="first" data-stream-version="9007199254740993" data-update-version="9007199254740993">First</li></ol>')
+        list.click()
+        await htmx.timeout(20)
+        assert.deepEqual(Array.from(list.children, child => child.id), [
+            'first',
+            'middle',
+            'last'
+        ])
+    })
 
 })
