@@ -216,8 +216,10 @@ rooted at the resolved swap target:
 Target-scoped transitions are not placed in the document transition queue.
 Different targets can animate concurrently, and a newer transition on the same
 target supersedes its older visual animation. Every accepted DOM update still
-runs immediately. Browsers without `Element.startViewTransition()` apply the
-same DOM update without animation.
+runs without waiting for visual animation completion. Browsers without
+`Element.startViewTransition()`, disconnected targets, and hidden documents
+apply the same DOM update immediately without animation, so visual capture
+never gates authoritative state.
 
 Set `transition:false` to opt out explicitly.
 

@@ -2342,7 +2342,10 @@ var htmx = (() => {
             if (
                 !mode ||
                 typeof startViewTransition !== 'function' ||
-                (mode === 'target' && !transitionRoot?.isConnected)
+                (mode === 'target' && (
+                    !transitionRoot?.isConnected ||
+                    document.visibilityState !== 'visible'
+                ))
             ) {
                 return immediate();
             }

@@ -176,7 +176,7 @@ init: (internalAPI) => { api = internalAPI; },
 `updateCallbackDone` when later work depends on the DOM mutation; do not wait
 for `finished` before accepting a newer update. The helper performs the update
 immediately when the scoped API is unavailable, the root is disconnected, the
-transition is canceled, or capture cannot start.
+document is hidden, the transition is canceled, or capture cannot start.
 
 ## Request Context (`detail.ctx`)
 

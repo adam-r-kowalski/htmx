@@ -444,6 +444,29 @@ describe('swap() unit tests', function() {
         assert.equal(target.innerHTML, '<span>New</span>');
     })
 
+    it('applies target updates immediately while the document is hidden', async function () {
+        let target = createProcessedHTML("<div id='scope'>Old</div>");
+        let starts = 0;
+        let visibilityState = Object.getOwnPropertyDescriptor(document, 'visibilityState');
+        Object.defineProperty(document, 'visibilityState', {configurable: true, value: 'hidden'});
+        target.startViewTransition = () => {
+            starts++;
+            throw new Error('a hidden document must not gate its DOM update on visual capture');
+        };
+
+        try {
+            await htmx.swap({target, text: '<span>New</span>', swap: 'innerHTML transition:target'});
+            assert.equal(starts, 0);
+            assert.equal(target.innerHTML, '<span>New</span>');
+        } finally {
+            if (visibilityState) {
+                Object.defineProperty(document, 'visibilityState', visibilityState);
+            } else {
+                delete document.visibilityState;
+            }
+        }
+    })
+
     it('runs a skipped scoped transition update exactly once', async function () {
         let target = createProcessedHTML("<div id='scope'>Old</div>");
         let updates = 0;
