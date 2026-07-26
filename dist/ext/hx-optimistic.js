@@ -7,25 +7,29 @@
                     style === 'append' ? 'beforeend' : style;
     }
 
-    function swapStyle(ctx) {
-        let [style = 'innerHTML'] = (ctx.swap || '').trim().split(/\s+/);
-        return normalizeSwapStyle(style);
+    function swapSpec(ctx) {
+        return api.parseSwapSpec(ctx.swap || htmx.config.defaultSwap);
     }
 
-    function optimisticSwapStyle(ctx) {
+    function optimisticSwapSpec(ctx) {
+        let spec = swapSpec(ctx);
         let style = api.attributeValue(ctx.sourceElement, "hx-optimistic-swap");
-        return style ? normalizeSwapStyle(style.trim()) : swapStyle(ctx);
+        return style
+            ? {...spec, style: normalizeSwapStyle(api.parseSwapSpec(style).style)}
+            : spec;
     }
 
-    function usesViewTransition(ctx) {
-        return ctx.transition === true || /\btransition\s*:\s*true\b/.test(ctx.swap || '');
+    function transitionMode(ctx) {
+        return swapSpec(ctx).transition ?? ctx.transition ?? false;
     }
 
     function updateWithViewTransition(ctx, update) {
-        if (usesViewTransition(ctx) && document.startViewTransition) {
-            return document.startViewTransition(update);
-        }
-        update();
+        return api.runViewTransition(
+            transitionMode(ctx),
+            ctx.optimisticTarget || ctx.target,
+            update,
+            ctx.sourceElement
+        );
     }
 
     let api;
@@ -81,7 +85,7 @@
             }
         }
 
-        let style = optimisticSwapStyle(ctx);
+        let style = optimisticSwapSpec(ctx).style;
         ctx.optHidden = [];
         ctx.optimisticNodes = optimisticNodes;
         ctx.optimisticDirect = direct;

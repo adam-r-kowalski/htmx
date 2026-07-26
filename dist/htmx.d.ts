@@ -134,8 +134,8 @@ export interface HtmxSwapContext {
   selectOOB?: string;
   /** Target element to swap into. Defaults to `document.body` */
   target?: Element;
-  /** Whether to use the View Transitions API for this swap */
-  transition?: boolean;
+  /** Use a document-scoped transition, a target-scoped transition, or no transition */
+  transition?: boolean | 'target';
   /** `hx-push-url` value — push a URL into history after the swap */
   push?: string | boolean;
   /** `hx-replace-url` value — replace the current history entry after the swap */
@@ -302,8 +302,8 @@ export interface HtmxRequestCtx {
   push: string | boolean;
   /** hx-replace-url value */
   replace: string | boolean;
-  /** Whether to use view transitions */
-  transition: boolean;
+  /** Whether to use a document- or target-scoped view transition */
+  transition: boolean | 'target';
   /** Fetch request options — modify here in htmx:config:request */
   request: HtmxRequestOptions;
   /** Response object, available after fetch resolves */
@@ -497,15 +497,30 @@ export interface HtmxEventMap {
 
   /**
    * Fires before a View Transition starts.
-   * Only fires when `htmx.config.transitions` is `true` and the browser supports the View Transitions API.
+   * Fires for supported document- and target-scoped transitions.
    * Cancel to skip the view transition for this swap.
    */
-  'htmx:before:viewTransition': { task: () => Promise<void> };
+  'htmx:before:viewTransition': {
+    task: () => Promise<void>;
+    mode: true | 'target';
+    root: Document | Element;
+    sourceElement?: Element;
+    skipped: boolean;
+    cancelled?: boolean;
+  };
 
   /**
-   * Fires after a View Transition animation completes.
+   * Fires after a View Transition animation completes or is skipped.
    */
-  'htmx:after:viewTransition': { task: () => Promise<void> };
+  'htmx:after:viewTransition': {
+    task: () => Promise<void>;
+    mode: true | 'target';
+    root: Document | Element;
+    sourceElement?: Element;
+    skipped: boolean;
+    cancelled?: boolean;
+    reason?: 'start-error';
+  };
 }
 
 export type HtmxEvent<K extends keyof HtmxEventMap> = CustomEvent<HtmxEventMap[K]>;

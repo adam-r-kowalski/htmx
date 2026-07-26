@@ -84,7 +84,7 @@ It defaults to [`htmx.config.defaultSwap`](/reference/config/htmx-config-default
 | `sourceElement` | Element used for relative selectors and swap events |
 | `select` | Content selected from `text` |
 | `selectOOB` | Out-of-band content selected from `text` |
-| `transition` | Whether to use a view transition |
+| `transition` | `true` for a document transition, `"target"` for a target-scoped transition, or `false` |
 
 ## Set the Source
 
@@ -130,7 +130,10 @@ Swap events fire on `sourceElement`. Settle events fire on each swap target.
 
 ## Return Value
 
-`htmx.swap()` returns a `Promise` that resolves after the swap finishes.
+`htmx.swap()` returns a `Promise` that resolves after the swap finishes. For
+`transition:target`, it resolves after the update callback and does not wait for
+the visual animation. This lets a newer update supersede an in-progress
+animation without delaying authoritative content.
 
 ```javascript
 await htmx.swap({

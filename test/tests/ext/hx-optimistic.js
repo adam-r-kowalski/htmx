@@ -88,6 +88,63 @@ describe('hx-optimistic attribute', function() {
         }
     })
 
+    it('uses the optimistic target as the transition:target scope', async function () {
+        let responses = mockSequentialResponses('POST', '/submit', '<li id="message-1">Committed</li>')
+        let list = createProcessedHTML('<ol id="result"><li id="existing">Existing</li></ol><template id="opt"><li id="message-1">Pending</li></template><form hx-post="/submit" hx-target="#result" hx-swap="innerHTML transition:target" hx-optimistic="#opt" hx-optimistic-swap="beforeend"><button type="submit">Go</button></form>');
+        let starts = 0
+        let releases = []
+        list.startViewTransition = update => {
+            starts++
+            let updateCallbackDone = Promise.resolve().then(update)
+            let finished = updateCallbackDone.then(() => new Promise(resolve => releases.push(resolve)))
+            return {ready: updateCallbackDone, updateCallbackDone, finished, skipTransition: () => {}}
+        }
+
+        let requestFinished = forRequest(2000)
+        find('button').click()
+        await htmx.timeout(0)
+        assert.equal(starts, 1)
+        assert.equal(find('#message-1').textContent, 'Pending')
+
+        await responses.next()
+        await requestFinished
+        assert.equal(starts, 2)
+        assert.equal(find('#message-1').textContent, 'Committed')
+        for (let release of releases) release()
+    })
+
+    it('falls back immediately when transition:target is unsupported', async function () {
+        mockResponse('POST', '/submit', 'Final')
+        let target = createProcessedHTML('<div id="result">Original</div><template id="opt"><span>Optimistic</span></template><button hx-post="/submit" hx-target="#result" hx-swap="innerHTML transition:target" hx-optimistic="#opt">Go</button>');
+        target.startViewTransition = undefined
+
+        find('button').click()
+        await forRequest()
+
+        assert.equal(target.textContent.trim(), 'Final')
+    })
+
+    it('rolls back a failed optimistic target transition through the same scope', async function () {
+        fetchMock.mockResponse('POST', '/submit', () => Promise.reject(new Error('Network error')));
+        let target = createProcessedHTML('<div id="result"><span id="original">Original</span></div><template id="opt"><span>Optimistic</span></template><form hx-post="/submit" hx-target="#result" hx-swap="innerHTML transition:target" hx-optimistic="#opt"><input name="prompt" value="retry me"><button type="submit">Go</button></form>');
+        let starts = 0
+        target.startViewTransition = update => {
+            starts++
+            let updateCallbackDone = Promise.resolve().then(update)
+            return {ready: updateCallbackDone, updateCallbackDone, finished: updateCallbackDone, skipTransition: () => {}}
+        }
+
+        let error = waitForEvent('htmx:error', 2000)
+        find('button').click()
+        await error
+        await htmx.timeout(0)
+
+        assert.equal(starts, 2)
+        assert.isNull(document.querySelector('.hx-optimistic'))
+        assert.equal(find('#original').style.display, '')
+        assert.equal(find('input[name="prompt"]').value, 'retry me')
+    })
+
     it('resolves extended target selectors from the source element', async function () {
         mockResponse('POST', '/submit', 'Final')
         const result = createProcessedHTML('<div class="result"><span>Original</span><button hx-post="/submit" hx-target="closest .result" hx-swap="innerHTML" hx-optimistic="#opt">Go</button></div><div id="opt" style="display:none">Optimistic</div>');

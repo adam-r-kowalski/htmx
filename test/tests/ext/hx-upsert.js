@@ -278,6 +278,52 @@ describe('hx-upsert extension', function() {
         assert.equal(list.children.length, 1)
     })
 
+    it('applies scoped same-ID replacement and ordered insertion atomically', async function () {
+        mockResponse('GET', '/test', '<li id="task-1" data-stream-version="1" data-update-version="2">Updated</li><li id="task-2" data-stream-version="2" data-update-version="1">New</li>')
+        let list = createProcessedHTML('<ol hx-get="/test" hx-swap="upsert key:data-stream-version version:data-update-version transition:target"><li id="task-1" data-stream-version="1" data-update-version="1">Original</li><li id="pending" data-pending="true">Pending</li></ol>')
+        let starts = 0
+        list.startViewTransition = update => {
+            starts++
+            let updateCallbackDone = Promise.resolve().then(update)
+            return {ready: updateCallbackDone, updateCallbackDone, finished: updateCallbackDone, skipTransition: () => {}}
+        }
+
+        list.click()
+        await htmx.timeout(20)
+
+        assert.equal(starts, 1)
+        assert.deepEqual(Array.from(list.children, child => child.id), ['task-1', 'task-2', 'pending'])
+        assert.equal(find('#task-1').textContent, 'Updated')
+    })
+
+    it('lets rapid scoped upserts reach the greatest version without waiting for animations', async function () {
+        let list = createProcessedHTML('<ol id="list"><li id="task-1" data-stream-version="1" data-update-version="1">One</li></ol>')
+        let starts = 0
+        let releases = []
+        list.startViewTransition = update => {
+            starts++
+            let updateCallbackDone = Promise.resolve().then(update)
+            let finished = updateCallbackDone.then(() => new Promise(resolve => releases.push(resolve)))
+            return {ready: updateCallbackDone, updateCallbackDone, finished, skipTransition: () => {}}
+        }
+
+        await htmx.swap({
+            target: list,
+            text: '<li id="task-1" data-stream-version="1" data-update-version="2">Two</li>',
+            swap: 'upsert key:data-stream-version version:data-update-version transition:target'
+        })
+        await htmx.swap({
+            target: list,
+            text: '<li id="task-1" data-stream-version="1" data-update-version="3">Three</li>',
+            swap: 'upsert key:data-stream-version version:data-update-version transition:target'
+        })
+
+        assert.equal(starts, 2)
+        assert.equal(find('#task-1').dataset.updateVersion, '3')
+        assert.equal(find('#task-1').textContent, 'Three')
+        for (let release of releases) release()
+    })
+
     it('compares u64 decimal versions without Number precision loss', async function () {
         mockResponse('GET', '/test', '<li id="middle" data-stream-version="18446744073709551614" data-update-version="18446744073709551614">Middle</li>')
         let list = createProcessedHTML('<ol hx-get="/test" hx-swap="upsert key:data-stream-version version:data-update-version"><li id="last" data-stream-version="18446744073709551615" data-update-version="18446744073709551615">Last</li><li id="first" data-stream-version="9007199254740993" data-update-version="9007199254740993">First</li></ol>')

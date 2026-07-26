@@ -25,6 +25,7 @@ describe('__parseSwapSpec unit tests', function() {
     it('parses transition modifier', function () {
         assert.equal(htmx.__parseSwapSpec('innerHTML transition:true').transition, true)
         assert.equal(htmx.__parseSwapSpec('innerHTML transition:false').transition, false)
+        assert.equal(htmx.__parseSwapSpec('innerHTML transition:target').transition, 'target')
     })
 
     it('parses ignoreTitle modifier', function () {

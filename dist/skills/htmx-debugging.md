@@ -154,7 +154,8 @@ The #1 gotcha in htmx 4:
 
 - CSS transitions rely on element ID stability across swaps -- keep `id` attributes consistent
 - `htmx-swapping` class is applied before swap, `htmx-settling` after
-- For View Transitions API: enable with `htmx.config.transitions = true` or `hx-swap="... transition:true"`
+- For document View Transitions: enable with `htmx.config.transitions = true` or `hx-swap="... transition:true"`
+- For interruptible element-scoped transitions: use `hx-swap="... transition:target"` and inspect the resolved target's `activeViewTransition`
 - Morphing (`innerMorph`/`outerMorph`) preserves animations better than `innerHTML`/`outerHTML`
 
 ### Form Data Not Included

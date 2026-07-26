@@ -1734,6 +1734,28 @@ describe('hx-ws WebSocket extension', function() {
             assert.include(content.innerHTML, 'Item 1');
             assert.include(content.innerHTML, 'Item 2');
         });
+
+        it('passes transition:target from the element swap spec to raw frames', async function() {
+            let container = createProcessedHTML(`
+                <div hx-ws:connect="/ws/test" hx-target="#content" hx-swap="innerHTML transition:target">
+                    <div id="content">Old</div>
+                </div>
+            `);
+            await htmx.timeout(50);
+            let content = document.getElementById('content');
+            let starts = 0;
+            content.startViewTransition = update => {
+                starts++;
+                let updateCallbackDone = Promise.resolve().then(update);
+                return {ready: updateCallbackDone, updateCallbackDone, finished: updateCallbackDone, skipTransition: () => {}};
+            };
+
+            mockWebSocketInstances[0].simulateRawMessage('<p>New</p>');
+            await htmx.timeout(20);
+
+            assert.equal(starts, 1);
+            assert.equal(content.textContent, 'New');
+        });
         
         it('message target overrides element hx-target', async function() {
             let container = createProcessedHTML(`

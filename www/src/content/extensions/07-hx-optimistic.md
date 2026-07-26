@@ -128,6 +128,24 @@ When the request opts into view transitions, the extension participates in both 
 
 The first transition changes the original content into the optimistic content. The response swap then transitions directly from the optimistic content into the authoritative server response. The original content is not restored between those transitions. If the request fails, the extension transitions from the optimistic content back to the original content.
 
+Use `transition:target` to keep optimistic insertion, authoritative
+replacement, and rollback local to the request target:
+
+```html
+<form
+    hx-post="/message"
+    hx-target="#messages"
+    hx-swap="upsert transition:target"
+    hx-optimistic="#msg-opt"
+>
+    ...
+</form>
+```
+
+All three states use htmx's shared transition primitive. A fast response can
+supersede an in-progress optimistic animation without restoring the original
+DOM between states. Unsupported browsers apply each update immediately.
+
 ## Swap Style Behavior
 
 The extension respects the `hx-swap` value:

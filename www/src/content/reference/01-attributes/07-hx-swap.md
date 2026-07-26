@@ -202,6 +202,25 @@ Enables View Transitions API for smooth page transitions.
 <div hx-swap="innerHTML transition:true"></div>
 ```
 
+`transition:true` starts a document-scoped transition. htmx serializes document
+transitions so only one captures the document at a time.
+
+Use `transition:target` for an
+[element-scoped view transition](https://developer.chrome.com/docs/css-ui/view-transitions/element-scoped-view-transitions)
+rooted at the resolved swap target:
+
+```html
+<ol id="messages" hx-swap="upsert transition:target"></ol>
+```
+
+Target-scoped transitions are not placed in the document transition queue.
+Different targets can animate concurrently, and a newer transition on the same
+target supersedes its older visual animation. Every accepted DOM update still
+runs immediately. Browsers without `Element.startViewTransition()` apply the
+same DOM update without animation.
+
+Set `transition:false` to opt out explicitly.
+
 Enable globally: [`htmx.config.transitions = true`](/reference/config/htmx-config-transitions)
 
 ### `swap`

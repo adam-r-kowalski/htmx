@@ -173,6 +173,8 @@ var htmx = (() => {
                 collectFormData: this.#collectFormData.bind(this),
                 getAttributeObject: this.#getAttributeObject.bind(this),
                 insertContent: this.#insertContent.bind(this),
+                parseSwapSpec: this.#parseSwapSpec.bind(this),
+                runViewTransition: this.#runViewTransition.bind(this),
                 morph: this.#morph.bind(this),
                 isSoftMatch: this.#isSoftMatch.bind(this),
                 initSecurity: (ttPolicy, syncFn, asyncFn) => {
@@ -1278,23 +1280,57 @@ var htmx = (() => {
                 }
 
                 let swapPromises = [];
-                let transitionTasks = [];
+                let documentTransitionTasks = [];
+                let targetTransitionTasks = new Map();
+                let mainTransition = mainSwap?.swapSpec?.transition ?? mainSwap?.transition ?? ctx.transition;
                 for (let task of tasks) {
-                    if (task.swapSpec?.transition ?? mainSwap?.transition ?? ctx.transition) {
-                        transitionTasks.push(task);
+                    let transition = task.swapSpec?.transition;
+                    if (transition == null) {
+                        // A target-scoped main swap must not accidentally capture unrelated OOB
+                        // work. Document transitions retain their response-wide behavior.
+                        transition = mainTransition === 'target'
+                            ? (task === mainSwap ? 'target' : false)
+                            : mainTransition;
+                    }
+                    if (transition === 'target') {
+                        let target = typeof task.target === 'string'
+                            ? document.querySelector(task.target)
+                            : task.target;
+                        if (!target) {
+                            swapPromises.push(this.#insertContent(task));
+                            continue;
+                        }
+                        task.target = target;
+                        let group = targetTransitionTasks.get(target);
+                        if (group) group.push(task);
+                        else targetTransitionTasks.set(target, [task]);
+                    } else if (transition) {
+                        documentTransitionTasks.push(task);
                     } else {
                         swapPromises.push(this.#insertContent(task));
                     }
                 }
 
-                // submit all transition tasks in the transition queue w/no CSS transitions
-                if (transitionTasks.length > 0) {
+                // Document transitions preserve the existing global queue semantics.
+                if (documentTransitionTasks.length > 0) {
                     let tasksWrapper = async ()=> {
-                        for (let task of transitionTasks) {
+                        for (let task of documentTransitionTasks) {
                             await this.#insertContent(task, false)
                         }
                     }
-                    swapPromises.push(this.#submitTransitionTask(tasksWrapper));
+                    swapPromises.push(this.#submitTransitionTask(tasksWrapper, ctx.sourceElement));
+                }
+
+                // Each target is an independent scope. Do not await visual completion: native
+                // element-scoped transitions supersede an older animation on the same target.
+                for (let [target, targetTasks] of targetTransitionTasks) {
+                    let tasksWrapper = async ()=> {
+                        for (let task of targetTasks) {
+                            await this.#insertContent(task, false)
+                        }
+                    }
+                    let transition = this.#runViewTransition('target', target, tasksWrapper, ctx.sourceElement);
+                    swapPromises.push(transition.updateCallbackDone);
                 }
 
                 await Promise.all(swapPromises);
@@ -2271,10 +2307,97 @@ var htmx = (() => {
             }
         }
 
-        #submitTransitionTask(task) {
+        #runViewTransition(mode, root, update, sourceElement = root) {
+            let transitionRoot = mode === 'target' ? root : document;
+            let startViewTransition = transitionRoot?.startViewTransition;
+            let invoked = false;
+            let updateCallbackDone;
+            let runUpdateOnce = () => {
+                if (!invoked) {
+                    invoked = true;
+                    try {
+                        updateCallbackDone = Promise.resolve(update());
+                    } catch (error) {
+                        updateCallbackDone = Promise.reject(error);
+                    }
+                }
+                return updateCallbackDone;
+            };
+            let immediate = (detail = null) => {
+                let done = runUpdateOnce();
+                let finished = done.catch(() => {});
+                if (detail) {
+                    finished = finished.finally(() => {
+                        this.#trigger(transitionRoot, "htmx:after:viewTransition", detail);
+                    });
+                }
+                return {
+                    transition: null,
+                    updateCallbackDone: done,
+                    finished,
+                    skipTransition: () => {}
+                };
+            };
+
+            if (
+                !mode ||
+                typeof startViewTransition !== 'function' ||
+                (mode === 'target' && !transitionRoot?.isConnected)
+            ) {
+                return immediate();
+            }
+
+            let detail = {
+                task: update,
+                mode,
+                root: transitionRoot,
+                sourceElement,
+                skipped: false
+            };
+            if (!this.#trigger(transitionRoot, "htmx:before:viewTransition", detail)) {
+                detail.skipped = true;
+                detail.cancelled = true;
+                return immediate(detail);
+            }
+
+            let transition;
+            try {
+                transition = startViewTransition.call(transitionRoot, runUpdateOnce);
+            } catch {
+                detail.skipped = true;
+                detail.reason = 'start-error';
+                return immediate(detail);
+            }
+            if (!transition) {
+                detail.skipped = true;
+                return immediate(detail);
+            }
+
+            // Avoid unhandled ready rejections when a newer scoped transition supersedes this one.
+            transition.ready?.catch?.(() => {});
+            let done = Promise.resolve(transition.updateCallbackDone).catch(error => {
+                if (!invoked) return runUpdateOnce();
+                throw error;
+            });
+            let finished = Promise.resolve(transition.finished)
+                .catch(() => {
+                    detail.skipped = true;
+                })
+                .finally(() => {
+                    this.#trigger(transitionRoot, "htmx:after:viewTransition", detail);
+                });
+            return {
+                transition,
+                updateCallbackDone: done,
+                finished,
+                skipTransition: transition.skipTransition?.bind(transition) || (() => {})
+            };
+        }
+
+        #submitTransitionTask(task, sourceElement) {
             return new Promise((resolve) => {
                 this.#transitionQueue ||= [];
-                this.#transitionQueue.push({ task, resolve });
+                this.#transitionQueue.push({ task, sourceElement, resolve });
                 if (!this.#processingTransition) {
                     this.#processTransitionQueue();
                 }
@@ -2287,16 +2410,11 @@ var htmx = (() => {
             }
 
             this.#processingTransition = true;
-            let { task, resolve } = this.#transitionQueue.shift();
+            let { task, sourceElement, resolve } = this.#transitionQueue.shift();
 
             try {
-                if (document.startViewTransition) {
-                    this.#trigger(document, "htmx:before:viewTransition", {task})
-                    await document.startViewTransition(task).finished;
-                    this.#trigger(document, "htmx:after:viewTransition", {task})
-                } else {
-                    await task();
-                }
+                let transition = this.#runViewTransition(true, document, task, sourceElement);
+                await transition.finished;
             } catch (e) {
                 // Transitions can be skipped/aborted - this is normal
             } finally {
@@ -3660,25 +3778,29 @@ htmx.config.historyCache ??= { disable: true };
                     style === 'append' ? 'beforeend' : style;
     }
 
-    function swapStyle(ctx) {
-        let [style = 'innerHTML'] = (ctx.swap || '').trim().split(/\s+/);
-        return normalizeSwapStyle(style);
+    function swapSpec(ctx) {
+        return api.parseSwapSpec(ctx.swap || htmx.config.defaultSwap);
     }
 
-    function optimisticSwapStyle(ctx) {
+    function optimisticSwapSpec(ctx) {
+        let spec = swapSpec(ctx);
         let style = api.attributeValue(ctx.sourceElement, "hx-optimistic-swap");
-        return style ? normalizeSwapStyle(style.trim()) : swapStyle(ctx);
+        return style
+            ? {...spec, style: normalizeSwapStyle(api.parseSwapSpec(style).style)}
+            : spec;
     }
 
-    function usesViewTransition(ctx) {
-        return ctx.transition === true || /\btransition\s*:\s*true\b/.test(ctx.swap || '');
+    function transitionMode(ctx) {
+        return swapSpec(ctx).transition ?? ctx.transition ?? false;
     }
 
     function updateWithViewTransition(ctx, update) {
-        if (usesViewTransition(ctx) && document.startViewTransition) {
-            return document.startViewTransition(update);
-        }
-        update();
+        return api.runViewTransition(
+            transitionMode(ctx),
+            ctx.optimisticTarget || ctx.target,
+            update,
+            ctx.sourceElement
+        );
     }
 
     let api;
@@ -3734,7 +3856,7 @@ htmx.config.historyCache ??= { disable: true };
             }
         }
 
-        let style = optimisticSwapStyle(ctx);
+        let style = optimisticSwapSpec(ctx).style;
         ctx.optHidden = [];
         ctx.optimisticNodes = optimisticNodes;
         ctx.optimisticDirect = direct;

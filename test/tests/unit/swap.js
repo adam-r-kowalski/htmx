@@ -380,6 +380,217 @@ describe('swap() unit tests', function() {
         afterTriggered.should.be.true;
     })
 
+    it('serializes transition:true swaps through the document transition queue', async function () {
+        let original = document.startViewTransition;
+        let releases = [];
+        let starts = 0;
+        document.startViewTransition = update => {
+            starts++;
+            let updateCallbackDone = Promise.resolve().then(update);
+            let finished = updateCallbackDone.then(() => new Promise(resolve => releases.push(resolve)));
+            return {ready: updateCallbackDone, updateCallbackDone, finished, skipTransition: () => {}};
+        };
+
+        try {
+            let first = htmx.swap({target: '#test-playground', text: '<div>First</div>', swap: 'innerHTML transition:true'});
+            await htmx.timeout(10);
+            let second = htmx.swap({target: '#test-playground', text: '<div>Second</div>', swap: 'innerHTML transition:true'});
+            await htmx.timeout(10);
+
+            assert.equal(starts, 1);
+            assert.equal(playground().textContent, 'First');
+            releases.shift()();
+            await htmx.timeout(10);
+            assert.equal(starts, 2);
+            assert.equal(playground().textContent, 'Second');
+            releases.shift()();
+            await Promise.all([first, second]);
+        } finally {
+            document.startViewTransition = original;
+        }
+    })
+
+    it('uses the resolved target for transition:target without starting a document transition', async function () {
+        let target = createProcessedHTML("<div id='scope'>Old</div>");
+        let originalDocument = document.startViewTransition;
+        let documentStarts = 0;
+        let targetStarts = 0;
+        document.startViewTransition = () => {
+            documentStarts++;
+            throw new Error('document transition must not start');
+        };
+        target.startViewTransition = update => {
+            targetStarts++;
+            let updateCallbackDone = Promise.resolve().then(update);
+            return {ready: updateCallbackDone, updateCallbackDone, finished: updateCallbackDone, skipTransition: () => {}};
+        };
+
+        try {
+            await htmx.swap({target: '#scope', text: '<span>New</span>', swap: 'innerHTML transition:target'});
+            assert.equal(targetStarts, 1);
+            assert.equal(documentStarts, 0);
+            assert.equal(target.textContent, 'New');
+        } finally {
+            document.startViewTransition = originalDocument;
+        }
+    })
+
+    it('falls back to the identical target DOM when scoped transitions are unsupported', async function () {
+        let target = createProcessedHTML("<div id='scope'>Old</div>");
+        target.startViewTransition = undefined;
+
+        await htmx.swap({target, text: '<span>New</span>', swap: 'innerHTML transition:target'});
+
+        assert.equal(target.innerHTML, '<span>New</span>');
+    })
+
+    it('runs a skipped scoped transition update exactly once', async function () {
+        let target = createProcessedHTML("<div id='scope'>Old</div>");
+        let updates = 0;
+        target.startViewTransition = update => {
+            let updateCallbackDone = Promise.resolve().then(() => {
+                updates++;
+                return update();
+            });
+            return {
+                ready: Promise.reject(new Error('skipped')),
+                updateCallbackDone,
+                finished: updateCallbackDone.then(() => Promise.reject(new Error('skipped'))),
+                skipTransition: () => {}
+            };
+        };
+
+        await htmx.swap({target, text: 'New', swap: 'innerHTML transition:target'});
+        await htmx.timeout(0);
+
+        assert.equal(updates, 1);
+        assert.equal(target.textContent, 'New');
+    })
+
+    it('cancels only the scoped animation while still applying the update', async function () {
+        let target = createProcessedHTML("<div id='scope'>Old</div>");
+        let starts = 0;
+        target.startViewTransition = () => {
+            starts++;
+            throw new Error('must not start');
+        };
+        let cancel = event => event.preventDefault();
+        target.addEventListener('htmx:before:viewTransition', cancel, {once: true});
+
+        await htmx.swap({target, text: 'New', swap: 'innerHTML transition:target'});
+
+        assert.equal(starts, 0);
+        assert.equal(target.textContent, 'New');
+    })
+
+    it('falls back exactly once when starting a scoped transition throws', async function () {
+        let target = createProcessedHTML("<div id='scope'>Old</div>");
+        let starts = 0;
+        target.startViewTransition = () => {
+            starts++;
+            throw new Error('cannot capture');
+        };
+
+        await htmx.swap({target, text: 'New', swap: 'innerHTML transition:target'});
+
+        assert.equal(starts, 1);
+        assert.equal(target.textContent, 'New');
+    })
+
+    it('starts a newer scoped transition without waiting for the older animation', async function () {
+        let target = createProcessedHTML("<div id='scope'>Old</div>");
+        let releases = [];
+        let starts = 0;
+        target.startViewTransition = update => {
+            starts++;
+            let updateCallbackDone = Promise.resolve().then(update);
+            let finished = updateCallbackDone.then(() => new Promise(resolve => releases.push(resolve)));
+            return {ready: updateCallbackDone, updateCallbackDone, finished, skipTransition: () => {}};
+        };
+
+        let first = htmx.swap({target, text: 'First', swap: 'innerHTML transition:target'});
+        await first;
+        let second = htmx.swap({target, text: 'Second', swap: 'innerHTML transition:target'});
+        await second;
+
+        assert.equal(starts, 2);
+        assert.equal(target.textContent, 'Second');
+        for (let release of releases) release();
+    })
+
+    it('allows scoped transitions on different targets to overlap', async function () {
+        let wrapper = createProcessedHTML("<div><div id='scope-a'>A</div><div id='scope-b'>B</div></div>");
+        let a = wrapper.querySelector('#scope-a');
+        let b = wrapper.querySelector('#scope-b');
+        let releases = [];
+        let started = [];
+        for (let target of [a, b]) {
+            target.startViewTransition = update => {
+                started.push(target.id);
+                let updateCallbackDone = Promise.resolve().then(update);
+                let finished = updateCallbackDone.then(() => new Promise(resolve => releases.push(resolve)));
+                return {ready: updateCallbackDone, updateCallbackDone, finished, skipTransition: () => {}};
+            };
+        }
+
+        await Promise.all([
+            htmx.swap({target: a, text: 'A2', swap: 'innerHTML transition:target'}),
+            htmx.swap({target: b, text: 'B2', swap: 'innerHTML transition:target'})
+        ]);
+
+        assert.sameMembers(started, ['scope-a', 'scope-b']);
+        assert.equal(a.textContent, 'A2');
+        assert.equal(b.textContent, 'B2');
+        for (let release of releases) release();
+    })
+
+    it('fires scoped transition lifecycle around the update without delaying after:swap', async function () {
+        let target = createProcessedHTML("<div id='scope'>Old</div>");
+        let order = [];
+        let release;
+        target.addEventListener('htmx:before:viewTransition', event => {
+            order.push('before:' + event.detail.mode);
+            assert.equal(event.detail.root, target);
+        }, {once: true});
+        document.addEventListener('htmx:after:swap', () => order.push('after-swap'), {once: true});
+        target.addEventListener('htmx:after:viewTransition', () => order.push('after-transition'), {once: true});
+        target.startViewTransition = update => {
+            let updateCallbackDone = Promise.resolve().then(() => {
+                order.push('update');
+                return update();
+            });
+            let finished = updateCallbackDone.then(() => new Promise(resolve => { release = resolve; }));
+            return {ready: updateCallbackDone, updateCallbackDone, finished, skipTransition: () => {}};
+        };
+
+        await htmx.swap({target, text: 'New', swap: 'innerHTML transition:target'});
+        assert.deepEqual(order, ['before:target', 'update', 'after-swap']);
+        release();
+        await htmx.timeout(10);
+        assert.deepEqual(order, ['before:target', 'update', 'after-swap', 'after-transition']);
+    })
+
+    it('keeps an unmarked OOB swap immediate beside a target-scoped main swap', async function () {
+        let wrapper = createProcessedHTML("<div><div id='scope'>Old</div><output id='cursor'>0</output></div>");
+        let target = wrapper.querySelector('#scope');
+        let cursorAtCapture;
+        target.startViewTransition = update => {
+            cursorAtCapture = wrapper.querySelector('#cursor').textContent;
+            let updateCallbackDone = Promise.resolve().then(update);
+            return {ready: updateCallbackDone, updateCallbackDone, finished: updateCallbackDone, skipTransition: () => {}};
+        };
+
+        await htmx.swap({
+            target,
+            text: "<span>New</span><output id='cursor' hx-swap-oob='outerHTML'>1</output>",
+            swap: 'innerHTML transition:target'
+        });
+
+        assert.equal(cursorAtCapture, '1');
+        assert.equal(target.textContent, 'New');
+        assert.equal(wrapper.querySelector('#cursor').textContent, '1');
+    })
+
     it('sets document title from response', async function () {
         let originalTitle = document.title;
         await htmx.swap({"target":"#test-playground", "text":"<html><head><title>New Title</title></head><body><div>Content</div></body></html>"})

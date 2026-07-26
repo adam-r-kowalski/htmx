@@ -160,6 +160,8 @@ init: (internalAPI) => { api = internalAPI; },
 | `api.collectFormData(elt, form, submitter, validate, isGet)` | Collect form data |
 | `api.getAttributeObject(elt, name, callback, scope)` | Read an object-valued attribute |
 | `api.insertContent(task, cssTransition)` | Insert a swap task's content |
+| `api.parseSwapSpec(value)` | Parse the canonical serialized `hx-swap` value |
+| `api.runViewTransition(mode, root, update, sourceElement)` | Run a document- or target-scoped transition with standard fallback and lifecycle events |
 | `api.morph(oldNode, fragment, innerHTML)` | Morph existing content |
 | `api.isSoftMatch(oldNode, newNode)` | Test whether two nodes can be morphed |
 | `api.initSecurity(ttPolicy, syncFn, asyncFn)` | Configure Trusted Types and script constructors |
@@ -168,6 +170,13 @@ init: (internalAPI) => { api = internalAPI; },
 | `api.triggerHtmxEvent(elt, name, detail, bubbles)` | Dispatch an htmx event |
 | `api.executeJavaScript(thisArg, values, code, expression, isAsync)` | Execute JavaScript through htmx security policy |
 <!-- check_extension_api:end -->
+
+`api.runViewTransition()` returns `transition`, `updateCallbackDone`,
+`finished`, and `skipTransition`. For target mode, await
+`updateCallbackDone` when later work depends on the DOM mutation; do not wait
+for `finished` before accepting a newer update. The helper performs the update
+immediately when the scoped API is unavailable, the root is disconnected, the
+transition is canceled, or capture cannot start.
 
 ## Request Context (`detail.ctx`)
 

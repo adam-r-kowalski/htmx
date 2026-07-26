@@ -133,7 +133,9 @@ Controls how response content is placed relative to the target. Default: `innerH
 |---------------------|----------------------------------------------|
 | `swap:<time>`       | Delay before swap                            |
 | `settle:<time>`     | Delay between swap and settle                |
-| `transition:true`   | Use View Transitions API                     |
+| `transition:true`   | Use a queued document-scoped View Transition |
+| `transition:target` | Use the resolved target as an interruptible element-scoped transition |
+| `transition:false`  | Explicitly disable View Transitions           |
 | `ignoreTitle:true`  | Don't update page title from response        |
 | `scroll:top/bottom` | Scroll target after swap                     |
 | `show:top/bottom`   | Scroll target into viewport                  |
