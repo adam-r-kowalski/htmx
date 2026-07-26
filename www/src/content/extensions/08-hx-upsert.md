@@ -6,7 +6,7 @@ icon: "icon-[mdi--update]"
 keywords: ["upsert", "swap", "list", "update", "insert"]
 ---
 
-The `upsert` extension adds a new swap style that intelligently updates existing elements by ID and inserts new ones, while preserving elements not in the response. This is particularly useful for maintaining dynamic lists where you want to update specific items without replacing the entire container.
+The `upsert` extension adds a new swap style that updates existing elements by ID and inserts new ones while preserving elements not in the response. It is useful for event streams and dynamic lists where a response contains only the rows that changed.
 
 ## Installing
 
@@ -54,6 +54,13 @@ The upsert swap style:
 1. **Updates** elements with matching IDs (replaces their outerHTML)
 2. **Inserts** new elements that don't have matching IDs
 3. **Preserves** existing elements not present in the response
+4. **Rejects** duplicate or stale replacements when a version attribute is configured
+
+An already ordered target has a strict mutation-locality guarantee: applying a
+patch mutates only rows supplied by that patch. Unrelated siblings remain
+connected to the same parent, and a duplicate or stale patch performs no DOM
+mutation at all. This lets the browser preserve focus, selection, component
+state, and its native scroll anchor.
 
 ## Configuration
 
@@ -73,7 +80,7 @@ Use `sort:desc` for descending order:
 
 ### Custom Key Attribute
 
-Use `key:attr` to sort by a different attribute:
+Use `key:attr` to maintain canonical order by a different attribute:
 
 ```html
 <div hx-get="/items" hx-swap="upsert key:data-priority sort">
@@ -81,6 +88,39 @@ Use `key:attr` to sort by a different attribute:
     <div id="task-1" data-priority="5">Low Priority</div>
 </div>
 ```
+
+Decimal keys are compared as arbitrary-length integers, so values such as
+unsigned 64-bit event-store versions are ordered without JavaScript-number
+precision loss. Rows without the configured key are pending: they retain their
+relative order after canonical rows.
+
+### Freshness Attribute
+
+Use `version:attr` to reject a same-ID replacement whose version is equal to or
+older than the row already in the target:
+
+```html
+<ol
+    hx-swap="upsert key:data-stream-version version:data-update-version"
+>
+    <li
+        id="task-42"
+        data-stream-version="12"
+        data-update-version="19"
+    >
+        Current task
+    </li>
+</ol>
+```
+
+This makes duplicate delivery and races between transports true no-ops.
+
+### Repairing Existing Order
+
+If the target begins out of order, `upsert` reconciles it to canonical keyed
+order followed by pending rows. Reconciliation preserves the longest already
+ordered sequence and moves only siblings that are genuinely misplaced; it
+never detaches and re-appends the whole target.
 
 ### Prepend Unkeyed Elements
 

@@ -10,9 +10,70 @@
 //   sort - sort ascending
 //   sort:desc - sort descending
 //   prepend - prepend elements without keys (default: append)
+//
+// Locality guarantee:
+//   An already ordered target only mutates rows supplied by the response.
+//   Stale and duplicate rows are true no-ops. Initially malformed targets
+//   are repaired with the minimum number of sibling moves.
 //==========================================================
 (() => {
     let api;
+
+    let compareValues = (a, b) => {
+        let result;
+        if (/^\d+$/.test(a) && /^\d+$/.test(b)) {
+            let normalizedA = a.replace(/^0+(?=\d)/, '');
+            let normalizedB = b.replace(/^0+(?=\d)/, '');
+            result = normalizedA.length - normalizedB.length ||
+                normalizedA.localeCompare(normalizedB);
+        } else {
+            result = a.localeCompare(b, undefined, {numeric: true});
+        }
+        return result;
+    };
+
+    let longestIncreasingSubsequence = (values) => {
+        let predecessors = new Array(values.length).fill(-1);
+        let tails = [];
+        for (let index = 0; index < values.length; index++) {
+            let low = 0;
+            let high = tails.length;
+            while (low < high) {
+                let middle = (low + high) >> 1;
+                if (values[tails[middle]] < values[index]) {
+                    low = middle + 1;
+                } else {
+                    high = middle;
+                }
+            }
+            if (low > 0) predecessors[index] = tails[low - 1];
+            tails[low] = index;
+        }
+
+        let result = [];
+        let cursor = tails.at(-1);
+        while (cursor !== undefined && cursor >= 0) {
+            result.push(cursor);
+            cursor = predecessors[cursor];
+        }
+        return result.reverse();
+    };
+
+    let reconcileOrder = (target, desired) => {
+        let current = Array.from(target.children);
+        if (current.every((node, index) => node === desired[index])) return;
+
+        let desiredIndex = new Map(desired.map((node, index) => [node, index]));
+        let keep = new Set(longestIncreasingSubsequence(
+            current.map(node => desiredIndex.get(node))
+        ).map(index => current[index]));
+        let anchor = null;
+        for (let index = desired.length - 1; index >= 0; index--) {
+            let node = desired[index];
+            if (!keep.has(node)) target.insertBefore(node, anchor);
+            anchor = node;
+        }
+    };
     
     htmx.registerExtension('upsert', {
         init: (internalAPI) => {
@@ -42,25 +103,23 @@
                 let keyAttr = swapSpec.key || 'id';
                 let versionAttr = swapSpec.version;
                 let desc = swapSpec.sort === 'desc';
-                let getKey = (el) => el.getAttribute(keyAttr) || el.id;
-
-                let compareValues = (a, b) => {
-                    let result;
-                    if (/^\d+$/.test(a) && /^\d+$/.test(b)) {
-                        let normalizedA = a.replace(/^0+(?=\d)/, '');
-                        let normalizedB = b.replace(/^0+(?=\d)/, '');
-                        result = normalizedA.length - normalizedB.length ||
-                            normalizedA.localeCompare(normalizedB);
-                    } else {
-                        result = a.localeCompare(b, undefined, {numeric: true});
-                    }
-                    return result;
-                };
+                let ordered = !!(swapSpec.key || swapSpec.sort);
+                let getKey = (el) => keyAttr === 'id' ? el.id : el.getAttribute(keyAttr);
                 let compare = (a, b) => desc ? -compareValues(a, b) : compareValues(a, b);
+                let changed = [];
 
-                let insert = (newEl) => {
+                let insertionAnchor = (newKey, excluded) => {
+                    for (let child of target.children) {
+                        if (child === excluded) continue;
+                        let childKey = getKey(child);
+                        if (!childKey || compare(newKey, childKey) < 0) return child;
+                    }
+                    return null;
+                };
+
+                let insert = (newEl, excluded = null) => {
                     let newKey = getKey(newEl);
-                    if (!newKey) {
+                    if (!ordered || !newKey) {
                         if (swapSpec.prepend) {
                             target.insertBefore(newEl, target.firstChild);
                         } else {
@@ -68,43 +127,54 @@
                         }
                         return;
                     }
-
-                    for (let child of target.children) {
-                        let childKey = getKey(child);
-                        if (!childKey || compare(newKey, childKey) < 0) {
-                            target.insertBefore(newEl, child);
-                            return;
-                        }
-                    }
-                    target.appendChild(newEl);
+                    target.insertBefore(newEl, insertionAnchor(newKey, excluded));
                 };
 
                 for (let newEl of Array.from(fragment.children)) {
                     let id = newEl.id;
-                    if (id) {
-                        let existing = Array.from(target.children).find(child => child.id === id);
-                        if (existing) {
-                            if (versionAttr) {
-                                let existingVersion = existing.getAttribute(versionAttr);
-                                let newVersion = newEl.getAttribute(versionAttr);
-                                if (existingVersion && newVersion &&
-                                    compareValues(newVersion, existingVersion) <= 0) {
-                                    continue;
-                                }
-                            }
-                            existing.remove();
+                    let existing = id ?
+                        Array.from(target.children).find(child => child.id === id) :
+                        null;
+                    if (existing && versionAttr) {
+                        let existingVersion = existing.getAttribute(versionAttr);
+                        let newVersion = newEl.getAttribute(versionAttr);
+                        if (existingVersion && newVersion &&
+                            compareValues(newVersion, existingVersion) <= 0) {
+                            continue;
                         }
                     }
-                    insert(newEl);
+
+                    if (existing) {
+                        let existingKey = getKey(existing);
+                        let newKey = getKey(newEl);
+                        if (!ordered || existingKey === newKey) {
+                            existing.replaceWith(newEl);
+                        } else {
+                            // Insert first so replacing a pending row never briefly
+                            // collapses the document and disturbs its scroll anchor.
+                            insert(newEl, existing);
+                            existing.remove();
+                        }
+                    } else {
+                        insert(newEl);
+                    }
+                    changed.push(newEl);
                 }
-                if (swapSpec.key) {
+
+                if (ordered) {
                     let children = Array.from(target.children);
-                    let canonical = children.filter(child => getKey(child));
-                    let pending = children.filter(child => !getKey(child));
-                    canonical.sort((a, b) => compare(getKey(a), getKey(b)));
-                    target.append(...canonical, ...pending);
+                    let keyed = children
+                        .map((node, index) => ({node, index, key: getKey(node)}))
+                        .filter(item => item.key)
+                        .sort((a, b) => compare(a.key, b.key) || a.index - b.index)
+                        .map(item => item.node);
+                    let unkeyed = children.filter(child => !getKey(child));
+                    reconcileOrder(
+                        target,
+                        swapSpec.prepend ? [...unkeyed, ...keyed] : [...keyed, ...unkeyed]
+                    );
                 }
-                return true;
+                return changed;
             }
             return false;
         }

@@ -153,6 +153,46 @@ describe('hx-boost attribute', async function() {
         }
     })
 
+    it('boosted forms default to show:top and push history without explicit overrides', async function() {
+        let pushCount = 0
+        let effectiveShow = null
+        let originalPushState = history.pushState.bind(history)
+        history.pushState = (...args) => { pushCount++; originalPushState(...args) }
+        try {
+            mockResponse('POST', '/test', '<p>Accepted</p>')
+            let container = createProcessedHTML('<div><div id="result"></div><form id="f1" action="/test" method="post" hx-boost="true" hx-target="#result"><button>Submit</button></form></div>')
+            container.addEventListener('htmx:before:settle', event => {
+                effectiveShow = event.detail.task.swapSpec.show
+            }, {once: true})
+            find('#f1').requestSubmit()
+            await forRequest()
+            effectiveShow.should.equal('top')
+            pushCount.should.equal(1)
+        } finally {
+            history.pushState = originalPushState
+        }
+    })
+
+    it('boosted forms honor show:none and hx-push-url=false together', async function() {
+        let pushCount = 0
+        let effectiveShow = null
+        let originalPushState = history.pushState.bind(history)
+        history.pushState = (...args) => { pushCount++; originalPushState(...args) }
+        try {
+            mockResponse('POST', '/test', '<p>Accepted</p>')
+            let container = createProcessedHTML('<div><div id="result"></div><form id="f1" action="/test" method="post" hx-boost="true" hx-push-url="false" hx-target="#result" hx-swap="innerHTML show:none"><button>Submit</button></form></div>')
+            container.addEventListener('htmx:before:settle', event => {
+                effectiveShow = event.detail.task.swapSpec.show
+            }, {once: true})
+            find('#f1').requestSubmit()
+            await forRequest()
+            effectiveShow.should.equal('none')
+            pushCount.should.equal(0)
+        } finally {
+            history.pushState = originalPushState
+        }
+    })
+
     // // it('overriding default swap style does not effect boosting', async function() {
     // //     htmx.config.defaultSwapStyle = 'afterend'
     // //     try {

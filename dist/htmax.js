@@ -3660,6 +3660,27 @@ htmx.config.historyCache ??= { disable: true };
                     style === 'append' ? 'beforeend' : style;
     }
 
+    function swapStyle(ctx) {
+        let [style = 'innerHTML'] = (ctx.swap || '').trim().split(/\s+/);
+        return normalizeSwapStyle(style);
+    }
+
+    function optimisticSwapStyle(ctx) {
+        let style = api.attributeValue(ctx.sourceElement, "hx-optimistic-swap");
+        return style ? normalizeSwapStyle(style.trim()) : swapStyle(ctx);
+    }
+
+    function usesViewTransition(ctx) {
+        return ctx.transition === true || /\btransition\s*:\s*true\b/.test(ctx.swap || '');
+    }
+
+    function updateWithViewTransition(ctx, update) {
+        if (usesViewTransition(ctx) && document.startViewTransition) {
+            return document.startViewTransition(update);
+        }
+        update();
+    }
+
     let api;
 
     function insertOptimisticContent(ctx) {
@@ -3678,12 +3699,20 @@ htmx.config.historyCache ??= { disable: true };
         }
         if (!target) return;
 
-        // Create optimistic div with reset styling
-        let optimisticDiv = document.createElement('div');
-        optimisticDiv.style.cssText = 'all: initial';
-        optimisticDiv.classList.add('hx-optimistic');
         let sourceNodes = sourceElt instanceof HTMLTemplateElement ? sourceElt.content.childNodes : sourceElt.childNodes;
-        for (let child of sourceNodes) optimisticDiv.appendChild(child.cloneNode(true));
+        let direct = api.attributeValue(ctx.sourceElement, "hx-optimistic-swap") != null;
+        let optimisticNodes;
+        if (direct) {
+            optimisticNodes = Array.from(sourceNodes, child => child.cloneNode(true));
+        } else {
+            // Preserve the original full-target optimistic lifecycle.
+            let optimisticDiv = document.createElement('div');
+            optimisticDiv.style.cssText = 'all: initial';
+            optimisticDiv.classList.add('hx-optimistic');
+            for (let child of sourceNodes) optimisticDiv.appendChild(child.cloneNode(true));
+            optimisticNodes = [optimisticDiv];
+            ctx.optimisticDiv = optimisticDiv;
+        }
 
         // Set data-* for each request param
         if (ctx.optimisticBody) {
@@ -3692,48 +3721,81 @@ htmx.config.historyCache ??= { disable: true };
                 let values = ctx.optimisticBody.getAll(k).filter(v => typeof v === 'string');
                 if (!values.length) continue;
                 let val = values.length === 1 ? values[0] : JSON.stringify(values);
-                try {
-                    optimisticDiv.dataset[k] = val;
-                } catch (e) {
+                for (let optimisticNode of optimisticNodes) {
+                    if (!(optimisticNode instanceof HTMLElement)) continue;
                     try {
-                        optimisticDiv.setAttribute('data-' + k, val);
-                    } catch (e2) { /* truly invalid name, skip */ }
+                        optimisticNode.dataset[k] = val;
+                    } catch (e) {
+                        try {
+                            optimisticNode.setAttribute('data-' + k, val);
+                        } catch (e2) { /* truly invalid name, skip */ }
+                    }
                 }
             }
         }
 
-        let swapStyle = normalizeSwapStyle(ctx.swap);
+        let style = optimisticSwapStyle(ctx);
         ctx.optHidden = [];
+        ctx.optimisticNodes = optimisticNodes;
+        ctx.optimisticDirect = direct;
+        ctx.optimisticTarget = target;
 
-        if (swapStyle === 'innerHTML') {
-            // Hide children of target
-            for (let child of target.children) {
-                child.style.display = 'none';
-                ctx.optHidden.push(child);
+        let insert = () => {
+            if (style === 'innerHTML') {
+                // Hide children of target
+                for (let child of target.children) {
+                    child.style.display = 'none';
+                    ctx.optHidden.push(child);
+                }
+                target.append(...optimisticNodes);
+            } else if (style === 'beforebegin') {
+                target.before(...optimisticNodes);
+            } else if (style === 'afterbegin') {
+                target.prepend(...optimisticNodes);
+            } else if (style === 'beforeend') {
+                target.append(...optimisticNodes);
+            } else if (style === 'afterend') {
+                target.after(...optimisticNodes);
+            } else {
+                // Assume outerHTML-like behavior, Hide target and insert div after it
+                target.style.display = 'none';
+                ctx.optHidden.push(target);
+                target.after(...optimisticNodes);
             }
-            target.appendChild(optimisticDiv);
-        } else if (['beforebegin', 'afterbegin', 'beforeend', 'afterend'].includes(swapStyle)) {
-            target.insertAdjacentElement(swapStyle, optimisticDiv);
-        } else {
-            // Assume outerHTML-like behavior, Hide target and insert div after it
-            target.style.display = 'none';
-            ctx.optHidden.push(target);
-            target.after(optimisticDiv);
-        }
-        ctx.optimisticDiv = optimisticDiv;
-        htmx.process(optimisticDiv);
+            for (let optimisticNode of optimisticNodes) {
+                if (optimisticNode instanceof HTMLElement) htmx.process(optimisticNode);
+            }
+        };
+        ctx.optimisticTransition = updateWithViewTransition(ctx, insert);
     }
 
     function removeOptimisticContent(ctx) {
-        if (!ctx.optimisticDiv) return;
+        if (!ctx.optimisticNodes) return;
 
-        // Remove optimistic div
-        ctx.optimisticDiv.remove();
+        for (let optimisticNode of ctx.optimisticNodes) optimisticNode.remove();
 
         // Unhide any hidden elements
         for (let elt of ctx.optHidden) {
             elt.style.display = '';
         }
+    }
+
+    function rollbackOptimisticContent(ctx) {
+        let rollback = () => updateWithViewTransition(ctx, () => removeOptimisticContent(ctx));
+        if (ctx.optimisticTransition?.updateCallbackDone) {
+            ctx.optimisticTransition.updateCallbackDone.then(rollback, rollback);
+        } else {
+            rollback();
+        }
+    }
+
+    function optimisticContentWillBeReplaced(ctx, tasks) {
+        if (ctx.optimisticDirect) return true;
+        return tasks?.some(task =>
+            task.type === 'main' &&
+            task.target === ctx.optimisticTarget &&
+            task.swapSpec?.style === 'innerHTML'
+        );
     }
 
     htmx.registerExtension('hx-optimistic', {
@@ -3746,10 +3808,12 @@ htmx.config.historyCache ??= { disable: true };
             insertOptimisticContent(detail.ctx);
         },
         htmx_error : (elt, detail) => {
-            removeOptimisticContent(detail.ctx)
+            rollbackOptimisticContent(detail.ctx)
         },
         htmx_before_swap : (elt, detail) => {
-            removeOptimisticContent(detail.ctx)
+            if (!optimisticContentWillBeReplaced(detail.ctx, detail.tasks)) {
+                removeOptimisticContent(detail.ctx)
+            }
         }
     });
 })();
@@ -4728,12 +4792,74 @@ htmx.config.historyCache ??= { disable: true };
 //
 // Modifiers:
 //   key:attr - attribute name for sorting (default: id)
+//   version:attr - attribute name for rejecting duplicate or stale replacements
 //   sort - sort ascending
 //   sort:desc - sort descending
 //   prepend - prepend elements without keys (default: append)
+//
+// Locality guarantee:
+//   An already ordered target only mutates rows supplied by the response.
+//   Stale and duplicate rows are true no-ops. Initially malformed targets
+//   are repaired with the minimum number of sibling moves.
 //==========================================================
 (() => {
     let api;
+
+    let compareValues = (a, b) => {
+        let result;
+        if (/^\d+$/.test(a) && /^\d+$/.test(b)) {
+            let normalizedA = a.replace(/^0+(?=\d)/, '');
+            let normalizedB = b.replace(/^0+(?=\d)/, '');
+            result = normalizedA.length - normalizedB.length ||
+                normalizedA.localeCompare(normalizedB);
+        } else {
+            result = a.localeCompare(b, undefined, {numeric: true});
+        }
+        return result;
+    };
+
+    let longestIncreasingSubsequence = (values) => {
+        let predecessors = new Array(values.length).fill(-1);
+        let tails = [];
+        for (let index = 0; index < values.length; index++) {
+            let low = 0;
+            let high = tails.length;
+            while (low < high) {
+                let middle = (low + high) >> 1;
+                if (values[tails[middle]] < values[index]) {
+                    low = middle + 1;
+                } else {
+                    high = middle;
+                }
+            }
+            if (low > 0) predecessors[index] = tails[low - 1];
+            tails[low] = index;
+        }
+
+        let result = [];
+        let cursor = tails.at(-1);
+        while (cursor !== undefined && cursor >= 0) {
+            result.push(cursor);
+            cursor = predecessors[cursor];
+        }
+        return result.reverse();
+    };
+
+    let reconcileOrder = (target, desired) => {
+        let current = Array.from(target.children);
+        if (current.every((node, index) => node === desired[index])) return;
+
+        let desiredIndex = new Map(desired.map((node, index) => [node, index]));
+        let keep = new Set(longestIncreasingSubsequence(
+            current.map(node => desiredIndex.get(node))
+        ).map(index => current[index]));
+        let anchor = null;
+        for (let index = desired.length - 1; index >= 0; index--) {
+            let node = desired[index];
+            if (!keep.has(node)) target.insertBefore(node, anchor);
+            anchor = node;
+        }
+    };
     
     htmx.registerExtension('upsert', {
         init: (internalAPI) => {
@@ -4743,9 +4869,11 @@ htmx.config.historyCache ??= { disable: true };
             let {ctx, tasks} = detail;
             let swapSpec = {style: 'upsert'};
             let key = templateElt.getAttribute('key');
+            let version = templateElt.getAttribute('version');
             let sort = templateElt.getAttribute('sort');
             let prepend = templateElt.hasAttribute('prepend');
             if (key) swapSpec.key = key;
+            if (version) swapSpec.version = version;
             if (sort !== null) swapSpec.sort = sort || true;
             if (prepend) swapSpec.prepend = true;
             tasks.push({
@@ -4759,51 +4887,80 @@ htmx.config.historyCache ??= { disable: true };
         handle_swap: (style, target, fragment, swapSpec) => {
             if (style === 'upsert') {
                 let keyAttr = swapSpec.key || 'id';
+                let versionAttr = swapSpec.version;
                 let desc = swapSpec.sort === 'desc';
-                let firstChild = target.firstChild;
-                
-                let getKey = (el) => el.getAttribute(keyAttr) || el.id;
-                
-                let compare = (a, b) => {
-                    let result = a.localeCompare(b, undefined, {numeric: true});
-                    return desc ? -result : result;
-                };
-                
-                for (let newEl of Array.from(fragment.children)) {
-                    let id = newEl.id;
-                    if (id) {
-                        let existing = document.getElementById(id);
-                        if (existing) {
-                            existing.replaceWith(newEl);
-                            continue;
-                        }
+                let ordered = !!(swapSpec.key || swapSpec.sort);
+                let getKey = (el) => keyAttr === 'id' ? el.id : el.getAttribute(keyAttr);
+                let compare = (a, b) => desc ? -compareValues(a, b) : compareValues(a, b);
+                let changed = [];
+
+                let insertionAnchor = (newKey, excluded) => {
+                    for (let child of target.children) {
+                        if (child === excluded) continue;
+                        let childKey = getKey(child);
+                        if (!childKey || compare(newKey, childKey) < 0) return child;
                     }
-                    
+                    return null;
+                };
+
+                let insert = (newEl, excluded = null) => {
                     let newKey = getKey(newEl);
-                    if (!newKey) {
+                    if (!ordered || !newKey) {
                         if (swapSpec.prepend) {
-                            target.insertBefore(newEl, firstChild);
+                            target.insertBefore(newEl, target.firstChild);
                         } else {
                             target.appendChild(newEl);
                         }
-                        continue;
+                        return;
                     }
-                    
-                    let inserted = false;
-                    for (let child of target.children) {
-                        let childKey = getKey(child);
-                        if (childKey && compare(newKey, childKey) < 0) {
-                            target.insertBefore(newEl, child);
-                            inserted = true;
-                            break;
+                    target.insertBefore(newEl, insertionAnchor(newKey, excluded));
+                };
+
+                for (let newEl of Array.from(fragment.children)) {
+                    let id = newEl.id;
+                    let existing = id ?
+                        Array.from(target.children).find(child => child.id === id) :
+                        null;
+                    if (existing && versionAttr) {
+                        let existingVersion = existing.getAttribute(versionAttr);
+                        let newVersion = newEl.getAttribute(versionAttr);
+                        if (existingVersion && newVersion &&
+                            compareValues(newVersion, existingVersion) <= 0) {
+                            continue;
                         }
                     }
-                    
-                    if (!inserted) {
-                        target.appendChild(newEl);
+
+                    if (existing) {
+                        let existingKey = getKey(existing);
+                        let newKey = getKey(newEl);
+                        if (!ordered || existingKey === newKey) {
+                            existing.replaceWith(newEl);
+                        } else {
+                            // Insert first so replacing a pending row never briefly
+                            // collapses the document and disturbs its scroll anchor.
+                            insert(newEl, existing);
+                            existing.remove();
+                        }
+                    } else {
+                        insert(newEl);
                     }
+                    changed.push(newEl);
                 }
-                return true;
+
+                if (ordered) {
+                    let children = Array.from(target.children);
+                    let keyed = children
+                        .map((node, index) => ({node, index, key: getKey(node)}))
+                        .filter(item => item.key)
+                        .sort((a, b) => compare(a.key, b.key) || a.index - b.index)
+                        .map(item => item.node);
+                    let unkeyed = children.filter(child => !getKey(child));
+                    reconcileOrder(
+                        target,
+                        swapSpec.prepend ? [...unkeyed, ...keyed] : [...keyed, ...unkeyed]
+                    );
+                }
+                return changed;
             }
             return false;
         }

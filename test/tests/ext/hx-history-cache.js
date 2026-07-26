@@ -32,9 +32,15 @@ describe('hx-history-cache extension', function () {
         playground().appendChild(historyElt);
     });
 
-    afterEach(() => {
+    afterEach(async () => {
         cleanupTest();
         sessionStorage.clear();
+        // WebKit rejects more than 100 History API calls in ten seconds.
+        // This suite intentionally exercises several calls per test, so pace
+        // only that engine instead of letting test isolation hit its quota.
+        if (/AppleWebKit/.test(navigator.userAgent) && !/Chrome/.test(navigator.userAgent)) {
+            await new Promise(resolve => setTimeout(resolve, 500));
+        }
     });
 
     // -------------------------------------------------------------------------
