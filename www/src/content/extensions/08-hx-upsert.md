@@ -51,7 +51,7 @@ The result will be:
 
 The upsert swap style:
 
-1. **Updates** elements with matching IDs (replaces their outerHTML)
+1. **Updates** elements with matching IDs (replaces them by default or patches them in place with `morph`)
 2. **Inserts** new elements that don't have matching IDs
 3. **Preserves** existing elements not present in the response
 4. **Rejects** duplicate or stale replacements when a version attribute is configured
@@ -63,6 +63,21 @@ mutation at all. This lets the browser preserve focus, selection, component
 state, and its native scroll anchor.
 
 ## Configuration
+
+### Morphing Same-ID Elements
+
+Add `morph` to patch a same-ID element in place with htmx's built-in morph
+engine instead of replacing it:
+
+```html
+<ol hx-swap="upsert version:data-update-version morph">
+```
+
+The row and every matching descendant ID retain their exact DOM nodes. New
+descendants are inserted, removed descendants are cleaned up, and attributes
+and text are synchronized from the authoritative response. This is useful for
+streamed server-rendered regions whose unchanged controls, disclosure state,
+animations, focus, and selection should remain stable between versions.
 
 ### Sorting
 
@@ -133,7 +148,7 @@ By default, elements without IDs are appended. Use `prepend` to insert them at t
 ### Combined Modifiers
 
 ```html
-<div hx-get="/items" hx-swap="upsert sort:desc prepend">
+<div hx-get="/items" hx-swap="upsert sort:desc prepend morph">
 ```
 
 ## Using with [`<hx-partial>`](/docs#partials-hx-partial)

@@ -33,6 +33,62 @@ describe('hx-upsert extension', function() {
         assert.equal(div.querySelector('#item-1').textContent, 'Updated')
     })
 
+    it('morphs a same-ID element and its stable descendants in place', async function () {
+        mockResponse(
+            'GET',
+            '/test',
+            '<article id="item-1" data-update-version="2"><p id="stable">Updated</p><p id="new">New</p></article>'
+        )
+        let div = createProcessedHTML(
+            '<div hx-get="/test" hx-swap="upsert version:data-update-version morph">' +
+                '<article id="item-1" data-update-version="1"><p id="stable">Original</p></article>' +
+            '</div>'
+        )
+        let originalRow = div.querySelector('#item-1')
+        let originalStable = div.querySelector('#stable')
+
+        div.click()
+        await htmx.timeout(20)
+
+        assert.strictEqual(div.querySelector('#item-1'), originalRow)
+        assert.strictEqual(div.querySelector('#stable'), originalStable)
+        assert.equal(originalStable.textContent, 'Updated')
+        assert.equal(div.querySelector('#new').textContent, 'New')
+        assert.equal(originalRow.dataset.updateVersion, '2')
+    })
+
+    it('morphs and repositions a pending row without replacing its DOM node', async function () {
+        mockResponse(
+            'GET',
+            '/test',
+            '<li id="human-2" data-stream-version="3" data-update-version="3"><span id="identity">Committed</span></li>'
+        )
+        let list = createProcessedHTML(
+            '<ol hx-get="/test" hx-swap="upsert key:data-stream-version version:data-update-version morph">' +
+                '<li id="human-1" data-stream-version="1" data-update-version="1">Human 1</li>' +
+                '<li id="task-1" data-stream-version="2" data-update-version="2">Task 1</li>' +
+                '<li id="task-2" data-stream-version="4" data-update-version="4">Task 2</li>' +
+                '<li id="human-2" data-pending="true"><span id="identity">Pending</span></li>' +
+            '</ol>'
+        )
+        let pending = list.querySelector('#human-2')
+        let identity = list.querySelector('#identity')
+
+        list.click()
+        await htmx.timeout(20)
+
+        assert.strictEqual(list.querySelector('#human-2'), pending)
+        assert.strictEqual(list.querySelector('#identity'), identity)
+        assert.deepEqual(Array.from(list.children, child => child.id), [
+            'human-1',
+            'task-1',
+            'human-2',
+            'task-2'
+        ])
+        assert.equal(identity.textContent, 'Committed')
+        assert.isFalse(pending.hasAttribute('data-pending'))
+    })
+
     it('replaced element is live and can trigger a new request', async function () {
         mockResponse('GET', '/test', '<div id="item-1"><button id="btn" hx-get="/test2" hx-trigger="click consume" hx-target="#item-1" hx-swap="innerHTML">Click</button></div>')
         mockResponse('GET', '/test2', 'Triggered')

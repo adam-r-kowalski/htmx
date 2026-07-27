@@ -7,6 +7,7 @@
 // Modifiers:
 //   key:attr - attribute name for sorting (default: id)
 //   version:attr - attribute name for rejecting duplicate or stale replacements
+//   morph - patch same-ID elements in place instead of replacing them
 //   sort - sort ascending
 //   sort:desc - sort descending
 //   prepend - prepend elements without keys (default: append)
@@ -102,6 +103,7 @@
             if (style === 'upsert') {
                 let keyAttr = swapSpec.key || 'id';
                 let versionAttr = swapSpec.version;
+                let morph = swapSpec.morph === true;
                 let desc = swapSpec.sort === 'desc';
                 let ordered = !!(swapSpec.key || swapSpec.sort);
                 let getKey = (el) => keyAttr === 'id' ? el.id : el.getAttribute(keyAttr);
@@ -147,7 +149,16 @@
                     if (existing) {
                         let existingKey = getKey(existing);
                         let newKey = getKey(newEl);
-                        if (!ordered || existingKey === newKey) {
+                        if (morph) {
+                            let replacement = document.createDocumentFragment();
+                            replacement.append(newEl);
+                            api.morph(existing, replacement, false);
+                            if (ordered && existingKey !== newKey) {
+                                insert(existing, existing);
+                            }
+                            changed.push(existing);
+                            continue;
+                        } else if (!ordered || existingKey === newKey) {
                             existing.replaceWith(newEl);
                         } else {
                             // Insert first so replacing a pending row never briefly
