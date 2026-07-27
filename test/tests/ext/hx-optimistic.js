@@ -128,16 +128,19 @@ describe('hx-optimistic attribute', function() {
         fetchMock.mockResponse('POST', '/submit', () => Promise.reject(new Error('Network error')));
         let target = createProcessedHTML('<div id="result"><span id="original">Original</span></div><template id="opt"><span>Optimistic</span></template><form hx-post="/submit" hx-target="#result" hx-swap="innerHTML transition:target" hx-optimistic="#opt"><input name="prompt" value="retry me"><button type="submit">Go</button></form>');
         let starts = 0
+        let resolveRollback
+        let rollbackDone = new Promise(resolve => resolveRollback = resolve)
         target.startViewTransition = update => {
             starts++
             let updateCallbackDone = Promise.resolve().then(update)
+            if (starts === 2) updateCallbackDone.then(resolveRollback, resolveRollback)
             return {ready: updateCallbackDone, updateCallbackDone, finished: updateCallbackDone, skipTransition: () => {}}
         }
 
         let error = waitForEvent('htmx:error', 2000)
         find('button').click()
         await error
-        await htmx.timeout(0)
+        await rollbackDone
 
         assert.equal(starts, 2)
         assert.isNull(document.querySelector('.hx-optimistic'))
